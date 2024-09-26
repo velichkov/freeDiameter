@@ -531,7 +531,44 @@ psm_loop:
 
 		}
 
+		/* Link-local message: They must be understood by our dictionary, otherwise we return an error */
+		{
+			struct msg * error = NULL;
+			int ret = fd_msg_parse_or_error( &msg, &error ); // ////////
+			if (ret != EBADMSG) {
+				CHECK_FCT_DO( ret,
+					{
+						char buf[256];
+						snprintf(buf, sizeof(buf), "%s: An unexpected error occurred while parsing a link-local message", peer->p_hdr.info.pi_diamid);
+						fd_hook_call(HOOK_MESSAGE_DROPPED, msg, peer, buf, fd_msg_pmdl_get(msg));
+						fd_msg_free(msg);
+						goto psm_end;
+					} );
+			} else {
+				if (msg == NULL) {
+					/* Send the error back to the peer */
+					CHECK_FCT_DO( ret = fd_out_send(&error, NULL, peer, 0),  );
+					if (error) {
+						char buf[256];
+						/* Only if an error occurred & the message was not saved / dumped */
+						snprintf(buf, sizeof(buf), "%s: error sending a message", peer->p_hdr.info.pi_diamid);
+						fd_hook_call(HOOK_MESSAGE_DROPPED, error, peer, buf, fd_msg_pmdl_get(error));
+						CHECK_FCT_DO( fd_msg_free(error), goto psm_end);
+					}
+				} else {
+					char buf[256];
+					/* We received an invalid answer, let's disconnect */
+					snprintf(buf, sizeof(buf), "%s: Received invalid answer to Base protocol message, disconnecting...", peer->p_hdr.info.pi_diamid);
+					fd_hook_call(HOOK_MESSAGE_DROPPED, msg, peer, buf, fd_msg_pmdl_get(msg));
+					CHECK_FCT_DO( fd_msg_free(msg), goto psm_end);
+					CHECK_FCT_DO( fd_event_send(peer->p_events, FDEVP_CNX_ERROR, 0, NULL), goto psm_reset );
+				}
+				goto psm_loop;
+			}
+		}
+
 		/* Log incoming message */
+		///// parsedict_do_msg fd_msg_parse_dict
 		fd_hook_call(HOOK_MESSAGE_RECEIVED, msg, peer, NULL, fd_msg_pmdl_get(msg));
 
 		if (cur_state == STATE_OPEN_NEW) {
@@ -591,41 +628,6 @@ psm_loop:
 			goto psm_loop;
 		}
 
-		/* Link-local message: They must be understood by our dictionary, otherwise we return an error */
-		{
-			struct msg * error = NULL;
-			int ret = fd_msg_parse_or_error( &msg, &error );
-			if (ret != EBADMSG) {
-				CHECK_FCT_DO( ret,
-					{
-						char buf[256];
-						snprintf(buf, sizeof(buf), "%s: An unexpected error occurred while parsing a link-local message", peer->p_hdr.info.pi_diamid);
-						fd_hook_call(HOOK_MESSAGE_DROPPED, msg, peer, buf, fd_msg_pmdl_get(msg));
-						fd_msg_free(msg);
-						goto psm_end;
-					} );
-			} else {
-				if (msg == NULL) {
-					/* Send the error back to the peer */
-					CHECK_FCT_DO( ret = fd_out_send(&error, NULL, peer, 0),  );
-					if (error) {
-						char buf[256];
-						/* Only if an error occurred & the message was not saved / dumped */
-						snprintf(buf, sizeof(buf), "%s: error sending a message", peer->p_hdr.info.pi_diamid);
-						fd_hook_call(HOOK_MESSAGE_DROPPED, error, peer, buf, fd_msg_pmdl_get(error));
-						CHECK_FCT_DO( fd_msg_free(error), goto psm_end);
-					}
-				} else {
-					char buf[256];
-					/* We received an invalid answer, let's disconnect */
-					snprintf(buf, sizeof(buf), "%s: Received invalid answer to Base protocol message, disconnecting...", peer->p_hdr.info.pi_diamid);
-					fd_hook_call(HOOK_MESSAGE_DROPPED, msg, peer, buf, fd_msg_pmdl_get(msg));
-					CHECK_FCT_DO( fd_msg_free(msg), goto psm_end);
-					CHECK_FCT_DO( fd_event_send(peer->p_events, FDEVP_CNX_ERROR, 0, NULL), goto psm_reset );
-				}
-				goto psm_loop;
-			}
-		}
 
 		/* Handle the LL message and update the expiry timer appropriately */
 		switch (hdr->msg_code) {
